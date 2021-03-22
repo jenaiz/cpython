@@ -4,10 +4,12 @@
 #include <ctype.h>
 #include "ast.h"
 #undef Yield   /* undefine macro conflicting with <winbase.h> */
+#include "pycore_ast.h"           // _PyAST_Validate()
 #include "pycore_object.h"        // _Py_AddToAllObjects()
 #include "pycore_pyerrors.h"      // _PyErr_NoMemory()
 #include "pycore_pystate.h"       // _PyThreadState_GET()
 #include "pycore_tuple.h"         // _PyTuple_FromArray()
+#include "pycore_ceval.h"         // _PyEval_Vector()
 
 _Py_IDENTIFIER(__builtins__);
 _Py_IDENTIFIER(__dict__);
@@ -219,9 +221,9 @@ builtin___build_class__(PyObject *self, PyObject *const *args, Py_ssize_t nargs,
                      Py_TYPE(ns)->tp_name);
         goto error;
     }
-    cell = PyEval_EvalCodeEx(PyFunction_GET_CODE(func), PyFunction_GET_GLOBALS(func), ns,
-                             NULL, 0, NULL, 0, NULL, 0, NULL,
-                             PyFunction_GET_CLOSURE(func));
+    PyFrameConstructor *f =  PyFunction_AS_FRAME_CONSTRUCTOR(func);
+    PyThreadState *tstate = PyThreadState_GET();
+    cell = _PyEval_Vector(tstate, f, ns, NULL, 0, NULL);
     if (cell != NULL) {
         if (bases != orig_bases) {
             if (PyMapping_SetItemString(ns, "__orig_bases__", orig_bases) < 0) {
@@ -532,8 +534,40 @@ filter_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
         Py_DECREF(it);
         return NULL;
     }
-    Py_INCREF(func);
-    lz->func = func;
+
+    lz->func = Py_NewRef(func);
+    lz->it = it;
+
+    return (PyObject *)lz;
+}
+
+static PyObject *
+filter_vectorcall(PyObject *type, PyObject * const*args,
+                size_t nargsf, PyObject *kwnames)
+{
+    PyTypeObject *tp = (PyTypeObject *)type;
+    if (tp == &PyFilter_Type && !_PyArg_NoKwnames("filter", kwnames)) {
+        return NULL;
+    }
+
+    Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
+    if (!_PyArg_CheckPositional("filter", nargs, 2, 2)) {
+        return NULL;
+    }
+
+    PyObject *it = PyObject_GetIter(args[1]);
+    if (it == NULL) {
+        return NULL;
+    }
+
+    filterobject *lz = (filterobject *)tp->tp_alloc(tp, 0);
+
+    if (lz == NULL) {
+        Py_DECREF(it);
+        return NULL;
+    }
+
+    lz->func = Py_NewRef(args[0]);
     lz->it = it;
 
     return (PyObject *)lz;
@@ -652,6 +686,7 @@ PyTypeObject PyFilter_Type = {
     PyType_GenericAlloc,                /* tp_alloc */
     filter_new,                         /* tp_new */
     PyObject_GC_Del,                    /* tp_free */
+    .tp_vectorcall = (vectorcallfunc)filter_vectorcall
 };
 
 
@@ -801,7 +836,7 @@ builtin_compile_impl(PyObject *module, PyObject *source, PyObject *filename,
                 PyArena_Free(arena);
                 goto error;
             }
-            if (!PyAST_Validate(mod)) {
+            if (!_PyAST_Validate(mod)) {
                 PyArena_Free(arena);
                 goto error;
             }
@@ -924,12 +959,12 @@ builtin_eval_impl(PyObject *module, PyObject *source, PyObject *globals,
         return NULL;
     }
 
-    if (_PyDict_GetItemIdWithError(globals, &PyId___builtins__) == NULL) {
-        if (_PyDict_SetItemId(globals, &PyId___builtins__,
-                              PyEval_GetBuiltins()) != 0)
-            return NULL;
+    int r = _PyDict_ContainsId(globals, &PyId___builtins__);
+    if (r == 0) {
+        r = _PyDict_SetItemId(globals, &PyId___builtins__,
+                              PyEval_GetBuiltins());
     }
-    else if (PyErr_Occurred()) {
+    if (r < 0) {
         return NULL;
     }
 
@@ -1012,12 +1047,12 @@ builtin_exec_impl(PyObject *module, PyObject *source, PyObject *globals,
             Py_TYPE(locals)->tp_name);
         return NULL;
     }
-    if (_PyDict_GetItemIdWithError(globals, &PyId___builtins__) == NULL) {
-        if (_PyDict_SetItemId(globals, &PyId___builtins__,
-                              PyEval_GetBuiltins()) != 0)
-            return NULL;
+    int r = _PyDict_ContainsId(globals, &PyId___builtins__);
+    if (r == 0) {
+        r = _PyDict_SetItemId(globals, &PyId___builtins__,
+                              PyEval_GetBuiltins());
     }
-    else if (PyErr_Occurred()) {
+    if (r < 0) {
         return NULL;
     }
 
@@ -1229,8 +1264,48 @@ map_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
     }
     lz->iters = iters;
     func = PyTuple_GET_ITEM(args, 0);
-    Py_INCREF(func);
-    lz->func = func;
+    lz->func = Py_NewRef(func);
+
+    return (PyObject *)lz;
+}
+
+static PyObject *
+map_vectorcall(PyObject *type, PyObject * const*args,
+                size_t nargsf, PyObject *kwnames)
+{
+    PyTypeObject *tp = (PyTypeObject *)type;
+    if (tp == &PyMap_Type && !_PyArg_NoKwnames("map", kwnames)) {
+        return NULL;
+    }
+
+    Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
+    if (nargs < 2) {
+        PyErr_SetString(PyExc_TypeError,
+           "map() must have at least two arguments.");
+        return NULL;
+    }
+
+    PyObject *iters = PyTuple_New(nargs-1);
+    if (iters == NULL) {
+        return NULL;
+    }
+
+    for (int i=1; i<nargs; i++) {
+        PyObject *it = PyObject_GetIter(args[i]);
+        if (it == NULL) {
+            Py_DECREF(iters);
+            return NULL;
+        }
+        PyTuple_SET_ITEM(iters, i-1, it);
+    }
+
+    mapobject *lz = (mapobject *)tp->tp_alloc(tp, 0);
+    if (lz == NULL) {
+        Py_DECREF(iters);
+        return NULL;
+    }
+    lz->iters = iters;
+    lz->func = Py_NewRef(args[0]);
 
     return (PyObject *)lz;
 }
@@ -1368,6 +1443,7 @@ PyTypeObject PyMap_Type = {
     PyType_GenericAlloc,                /* tp_alloc */
     map_new,                            /* tp_new */
     PyObject_GC_Del,                    /* tp_free */
+    .tp_vectorcall = (vectorcallfunc)map_vectorcall
 };
 
 
@@ -2089,7 +2165,7 @@ builtin_input_impl(PyObject *module, PyObject *prompt)
         Py_DECREF(stdin_encoding);
         Py_DECREF(stdin_errors);
         Py_XDECREF(po);
-        PyMem_FREE(s);
+        PyMem_Free(s);
 
         if (result != NULL) {
             if (PySys_Audit("builtins.input/result", "O", result) < 0) {
@@ -2636,6 +2712,11 @@ zip_next(zipobject *lz)
             PyTuple_SET_ITEM(result, i, item);
             Py_DECREF(olditem);
         }
+        // bpo-42536: The GC may have untracked this result tuple. Since we're
+        // recycling it, make sure it's tracked again:
+        if (!_PyObject_GC_IS_TRACKED(result)) {
+            _PyObject_GC_TRACK(result);
+        }
     } else {
         result = PyTuple_New(tuplesize);
         if (result == NULL)
@@ -2847,11 +2928,11 @@ static struct PyModuleDef builtinsmodule = {
 
 
 PyObject *
-_PyBuiltin_Init(PyThreadState *tstate)
+_PyBuiltin_Init(PyInterpreterState *interp)
 {
     PyObject *mod, *dict, *debug;
 
-    const PyConfig *config = _PyInterpreterState_GetConfig(tstate->interp);
+    const PyConfig *config = _PyInterpreterState_GetConfig(interp);
 
     if (PyType_Ready(&PyFilter_Type) < 0 ||
         PyType_Ready(&PyMap_Type) < 0 ||

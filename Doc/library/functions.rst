@@ -164,8 +164,8 @@ are always available.  They are listed here in alphabetical order.
    * If it is an *integer*, the array will have that size and will be
      initialized with null bytes.
 
-   * If it is an object conforming to the *buffer* interface, a read-only buffer
-     of the object will be used to initialize the bytes array.
+   * If it is an object conforming to the :ref:`buffer interface <bufferobjects>`,
+     a read-only buffer of the object will be used to initialize the bytes array.
 
    * If it is an *iterable*, it must be an iterable of integers in the range
      ``0 <= x < 256``, which are used as the initial contents of the array.
@@ -259,26 +259,24 @@ are always available.  They are listed here in alphabetical order.
    interactive statement (in the latter case, expression statements that
    evaluate to something other than ``None`` will be printed).
 
-   The optional arguments *flags* and *dont_inherit* control which :ref:`future
-   statements <future>` affect the compilation of *source*.  If neither
-   is present (or both are zero) the code is compiled with those future
-   statements that are in effect in the code that is calling :func:`compile`.  If the
-   *flags* argument is given and *dont_inherit* is not (or is zero) then the
-   future statements specified by the *flags* argument are used in addition to
-   those that would be used anyway. If *dont_inherit* is a non-zero integer then
-   the *flags* argument is it -- the future statements in effect around the call
-   to compile are ignored.
+   The optional arguments *flags* and *dont_inherit* control which
+   :ref:`compiler options <ast-compiler-flags>` should be activated
+   and which :ref:`future features <future>` should be allowed. If neither
+   is present (or both are zero) the code is compiled with the same flags that
+   affect the code that is calling :func:`compile`. If the *flags*
+   argument is given and *dont_inherit* is not (or is zero) then the compiler
+   options and the future statements specified by the *flags* argument are used
+   in addition to those that would be used anyway. If *dont_inherit* is a
+   non-zero integer then the *flags* argument is it -- the flags (future
+   features and compiler options) in the surrounding code are ignored.
 
-   Future statements are specified by bits which can be bitwise ORed together to
-   specify multiple statements.  The bitfield required to specify a given feature
-   can be found as the :attr:`~__future__._Feature.compiler_flag` attribute on
-   the :class:`~__future__._Feature` instance in the :mod:`__future__` module.
-
-   The optional argument *flags* also controls whether the compiled source is
-   allowed to contain top-level ``await``, ``async for`` and ``async with``.
-   When the bit ``ast.PyCF_ALLOW_TOP_LEVEL_AWAIT`` is set, the return code
-   object has ``CO_COROUTINE`` set in ``co_code``, and can be interactively
-   executed via ``await eval(code_object)``.
+   Compiler options and future statements are specified by bits which can be
+   bitwise ORed together to specify multiple options. The bitfield required to
+   specify a given future feature can be found as the
+   :attr:`~__future__._Feature.compiler_flag` attribute on the
+   :class:`~__future__._Feature` instance in the :mod:`__future__` module.
+   :ref:`Compiler flags <ast-compiler-flags>` can be found in :mod:`ast`
+   module, with ``PyCF_`` prefix.
 
    The argument *optimize* specifies the optimization level of the compiler; the
    default value of ``-1`` selects the optimization level of the interpreter as
@@ -480,14 +478,15 @@ are always available.  They are listed here in alphabetical order.
    dictionaries as global and local namespace.  If the *globals* dictionary is
    present and does not contain a value for the key ``__builtins__``, a
    reference to the dictionary of the built-in module :mod:`builtins` is
-   inserted under that key before *expression* is parsed.  This means that
-   *expression* normally has full access to the standard :mod:`builtins`
-   module and restricted environments are propagated.  If the *locals*
-   dictionary is omitted it defaults to the *globals* dictionary.  If both
-   dictionaries are omitted, the expression is executed with the *globals* and
-   *locals* in the environment where :func:`eval` is called.  Note, *eval()*
-   does not have access to the :term:`nested scopes <nested scope>` (non-locals) in the
-   enclosing environment.
+   inserted under that key before *expression* is parsed.  That way you can
+   control what builtins are available to the executed code by inserting your
+   own ``__builtins__`` dictionary into *globals* before passing it to
+   :func:`eval`.  If the *locals* dictionary is omitted it defaults to the
+   *globals* dictionary.  If both dictionaries are omitted, the expression is
+   executed with the *globals* and *locals* in the environment where
+   :func:`eval` is called.  Note, *eval()* does not have access to the
+   :term:`nested scopes <nested scope>` (non-locals) in the enclosing
+   environment.
 
    The return value is the result of
    the evaluated expression. Syntax errors are reported as exceptions.  Example:
@@ -527,7 +526,8 @@ are always available.  They are listed here in alphabetical order.
    occurs). [#]_ If it is a code object, it is simply executed.  In all cases,
    the code that's executed is expected to be valid as file input (see the
    section "File input" in the Reference Manual). Be aware that the
-   :keyword:`return` and :keyword:`yield` statements may not be used outside of
+   :keyword:`nonlocal`, :keyword:`yield`,  and :keyword:`return`
+   statements may not be used outside of
    function definitions even within the context of code passed to the
    :func:`exec` function. The return value is ``None``.
 
@@ -694,6 +694,13 @@ are always available.  They are listed here in alphabetical order.
    ``x.foobar``.  If the named attribute does not exist, *default* is returned if
    provided, otherwise :exc:`AttributeError` is raised.
 
+   .. note::
+
+      Since :ref:`private name mangling <private-name-mangling>` happens at
+      compilation time, one must manually mangle a private attribute's
+      (attributes with two leading underscores) name in order to retrieve it with
+      :func:`getattr`.
+
 
 .. function:: globals()
 
@@ -785,6 +792,8 @@ are always available.  They are listed here in alphabetical order.
 
    .. impl-detail:: This is the address of the object in memory.
 
+   .. audit-event:: builtins.id id id
+
 
 .. function:: input([prompt])
 
@@ -861,9 +870,13 @@ are always available.  They are listed here in alphabetical order.
    class>`) subclass thereof.  If *object* is not
    an object of the given type, the function always returns ``False``.
    If *classinfo* is a tuple of type objects (or recursively, other such
-   tuples), return ``True`` if *object* is an instance of any of the types.
+   tuples) or a :ref:`types-union` of multiple types, return ``True`` if
+   *object* is an instance of any of the types.
    If *classinfo* is not a type or tuple of types and such tuples,
    a :exc:`TypeError` exception is raised.
+
+   .. versionchanged:: 3.10
+      *classinfo* can be a :ref:`types-union`.
 
 
 .. function:: issubclass(class, classinfo)
@@ -871,8 +884,12 @@ are always available.  They are listed here in alphabetical order.
    Return ``True`` if *class* is a subclass (direct, indirect or :term:`virtual
    <abstract base class>`) of *classinfo*.  A
    class is considered a subclass of itself. *classinfo* may be a tuple of class
-   objects, in which case every entry in *classinfo* will be checked. In any other
+   objects or a :ref:`types-union`, in which case every entry in *classinfo*
+   will be checked. In any other
    case, a :exc:`TypeError` exception is raised.
+
+   .. versionchanged:: 3.10
+      *classinfo* can be a :ref:`types-union`.
 
 
 .. function:: iter(object[, sentinel])
@@ -1511,6 +1528,13 @@ are always available.  They are listed here in alphabetical order.
    object allows it.  For example, ``setattr(x, 'foobar', 123)`` is equivalent to
    ``x.foobar = 123``.
 
+   .. note::
+
+      Since :ref:`private name mangling <private-name-mangling>` happens at
+      compilation time, one must manually mangle a private attribute's
+      (attributes with two leading underscores) name in order to set it with
+      :func:`setattr`.
+
 
 .. class:: slice(stop)
            slice(start, stop[, step])
@@ -1689,7 +1713,7 @@ are always available.  They are listed here in alphabetical order.
 
 
 .. class:: type(object)
-           type(name, bases, dict)
+           type(name, bases, dict, **kwds)
 
    .. index:: object: type
 
@@ -1702,20 +1726,28 @@ are always available.  They are listed here in alphabetical order.
 
 
    With three arguments, return a new type object.  This is essentially a
-   dynamic form of the :keyword:`class` statement. The *name* string is the
-   class name and becomes the :attr:`~definition.__name__` attribute; the *bases*
-   tuple itemizes the base classes and becomes the :attr:`~class.__bases__`
-   attribute; and the *dict* dictionary is the namespace containing definitions
-   for class body and is copied to a standard dictionary to become the
-   :attr:`~object.__dict__` attribute.  For example, the following two
-   statements create identical :class:`type` objects:
+   dynamic form of the :keyword:`class` statement. The *name* string is
+   the class name and becomes the :attr:`~definition.__name__` attribute.
+   The *bases* tuple contains the base classes and becomes the
+   :attr:`~class.__bases__` attribute; if empty, :class:`object`, the
+   ultimate base of all classes, is added.  The *dict* dictionary contains
+   attribute and method definitions for the class body; it may be copied
+   or wrapped before becoming the :attr:`~object.__dict__` attribute.
+   The following two statements create identical :class:`type` objects:
 
       >>> class X:
       ...     a = 1
       ...
-      >>> X = type('X', (object,), dict(a=1))
+      >>> X = type('X', (), dict(a=1))
 
    See also :ref:`bltin-type-objects`.
+
+   Keyword arguments provided to the three argument form are passed to the
+   appropriate metaclass machinery (usually :meth:`~object.__init_subclass__`)
+   in the same way that keywords in a class
+   definition (besides *metaclass*) would.
+
+   See also :ref:`class-customization`.
 
    .. versionchanged:: 3.6
       Subclasses of :class:`type` which don't override ``type.__new__`` may no
